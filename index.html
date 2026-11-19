@@ -135,6 +135,11 @@ input[type=search]{width:100%;font:inherit;padding:9px 12px;border:1px solid var
 .lklist .grp{background:#eef2fc;font-weight:700;color:var(--navy);font-size:12.5px}
 .lklist mark{background:#ffe680;padding:0 1px;border-radius:2px}
 .lklist .me{background:#fffbe8}
+.lklist td.bus{text-align:center;font-weight:600;cursor:pointer;white-space:nowrap;padding:6px 4px;user-select:none;transition:background .1s}
+.lklist td.bus:hover{background:#eaf1ff}
+.lklist td.bus.done{background:#d9f2e3;color:#1f7a45}
+.busbar{display:flex;flex-wrap:wrap;gap:6px 12px;align-items:center;padding:8px 10px;border-bottom:1px solid var(--line);font-size:13.5px;background:#f8fbff}
+.busbar button{margin-left:auto;font:inherit;font-size:12.5px;padding:4px 10px;border-radius:8px;border:1px solid var(--line);background:#fff;cursor:pointer}
 .lklist .past{opacity:.5}
 .tch{padding:8px 10px;border-bottom:1px solid var(--line)}
 .tch .th{display:flex;justify-content:space-between;gap:8px;font-size:13.5px}
@@ -561,7 +566,7 @@ async function saveNote(key,text,el){
   await Promise.resolve();
   let db=null; try{ db = window.claude && claude.use ? await claude.use('db') : null; }catch(e){ db=null; }
   if(!db){ NOTES=lsGet(); st.textContent='Notes save on this device only'; if(!editing()) render(); return; }
-  notesDB=db;
+  notesDB=db; BUS.day=null;
   const t=setTimeout(()=>{ st.textContent='Can’t reach saved notes yet'; },10000);
   db.collection('notes').onSnapshot(snap=>{
     snap.docs.forEach(d=>{ const v=d.data(); if(v) NOTES[d.id]={text:v.text||'',updated:v.updated||''}; });
@@ -620,19 +625,37 @@ const LK={
    let found=[];
    let out='<table><tr><th>Load</th>'+[1,2,3,4,5,6,7,8,9,10].map(n=>`<th style="text-align:center">${n}</th>`).join('')+'</tr>';
    G.forEach(([ld,where,b],r)=>{ out+=`<tr><td><b>${ld}</b></td>`+b.map((v,c)=>{ const h=isHit(v); if(h) found.push(`Bus ${v}: ${ld} loading, spot ${c+1} (${where})`);
-     return `<td style="text-align:center;font-weight:600;${SH[r+'-'+c]?'background:#e3e6ec;':''}${h?'outline:3px solid #e0312b;outline-offset:-3px;background:#fffbe8;':''}">${esc(v)}</td>`; }).join('')+'</tr>'; });
+     const dn=v&&BUS.done.has(v);
+     return v?`<td data-bus="${esc(v)}" class="bus${dn?' done':''}" title="${dn?'Click to un-check':'Click when this bus arrives'}" style="${SH[r+'-'+c]&&!dn?'background:#e3e6ec;':''}${h?'outline:3px solid #e0312b;outline-offset:-3px;':''}">${dn?'✓ ':''}${esc(v)}</td>`:'<td></td>'; }).join('')+'</tr>'; });
    out+='</table>';
    const mine=LOOK.duty.filter(r=>/bus/i.test(r.w)); const d=['Mon','Tue','Wed','Thu','Fri'];
    const info=`<div class="tch">${found.length?found.map(f=>`<div style="color:#e0312b;font-weight:700">${esc(f)}</div>`).join(''):(m?'<div class="k">No bus with that number.</div>':'<div class="k">Type a bus number to find its spot.</div>')}
      <div style="margin-top:6px;font-size:13px"><b>1st loading:</b> behind MHHS, along the road beside the library<br><b>2nd – 4th loading:</b> outside at the MHHS cafeteria</div></div>`;
    const duty=mine.length?`<table><tr><td colspan="2" class="grp">PM bus loading duty</td></tr>${mine[0].d.map((v,i)=>`<tr class="${isMe(v)?'me':''}"><td>${d[i]}</td><td>${esc(v)}</td></tr>`).join('')}</table>`:'';
-   return info+'<div style="overflow-x:auto">'+out+'</div>'+duty; }},
+   const all=G.flatMap(g=>g[2]).filter(Boolean), n=all.filter(v=>BUS.done.has(v)).length;
+   const bar=`<div class="busbar"><span><b>${n}</b> of ${all.length} buses checked in${n===all.length?' 🎉 All here!':''}</span><span class="k">Click a bus when it pulls in. Resets each day.</span><button id="busclear">Clear all</button></div>`;
+   return info+bar+'<div style="overflow-x:auto">'+out+'</div>'+duty; }},
  map:{icon:'🗺️',name:'School Map & Evacuation',special:true},
  calls:{icon:'🏢',name:'Who to Call (District)',src:'"Who to call" sheet. All emails end in @mhbombers.com. Front office: 870-425-1215.',ph:'Department or name…',
   render(q){ return `<table>${CALLS.filter(c=>hit(q,...c)).map(c=>`<tr><td><b>${hl(c[0],q)}</b><div class="k">${hl(c[1],q)}</div></td></tr>`).join('')}</table>`; }},
 };
+
+// ---------- Bus check-in (resets daily; syncs when notes sync is on) ----------
+const BUS={day:null,done:new Set(),unsub:null};
+function busKey(){ return chicagoNow().iso; }
+function busLoad(){ const d=busKey(); if(BUS.day===d) return; BUS.day=d; BUS.done=new Set(); try{ const v=JSON.parse(localStorage.getItem('bits-bus-'+d)||'[]'); v.forEach(x=>BUS.done.add(x)); }catch(e){}
+  if(notesDB){ if(BUS.unsub) BUS.unsub(); BUS.unsub=notesDB.doc('bus/'+d).onSnapshot(sn=>{ const v=sn.exists&&sn.data(); if(v&&Array.isArray(v.done)){ BUS.done=new Set(v.done); if(lkOpen==='bus') lkRender(); } },()=>{}); } }
+let busSaving=Promise.resolve();
+function busSave(){ const d=BUS.day, arr=[...BUS.done]; try{ localStorage.setItem('bits-bus-'+d,JSON.stringify(arr)); }catch(e){}
+  if(notesDB){ busSaving=busSaving.then(()=>notesDB.doc('bus/'+d).set({done:arr,updated:new Date().toISOString()})).catch(()=>{}); } }
+document.getElementById('lklist').addEventListener('click',e=>{
+  if(lkOpen!=='bus') return;
+  if(e.target.id==='busclear'){ BUS.done.clear(); busSave(); lkRender(); return; }
+  const td=e.target.closest('td[data-bus]'); if(!td) return;
+  const v=td.dataset.bus; BUS.done.has(v)?BUS.done.delete(v):BUS.done.add(v); busSave(); lkRender();
+});
 let lkOpen=null;
-function lkRender(){ const k=LK[lkOpen]; const q=document.getElementById('lkq').value.trim().toLowerCase(); const h=k.render(q); document.getElementById('lklist').innerHTML=h&&h!=='<table></table>'?h:'<div class="tch k">No matches.</div>'; }
+function lkRender(){ if(lkOpen==='bus') busLoad(); const k=LK[lkOpen]; const q=document.getElementById('lkq').value.trim().toLowerCase(); const h=k.render(q); document.getElementById('lklist').innerHTML=h&&h!=='<table></table>'?h:'<div class="tch k">No matches.</div>'; }
 function lkShow(key){
   const p=document.getElementById('lkpanel');
   if(lkOpen===key){ lkOpen=null; p.hidden=true; }
